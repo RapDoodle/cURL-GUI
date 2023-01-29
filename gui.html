@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loading...</title>
+</head>
+
+<body>
+  <div class="main-block">
+    <form id="main-form" action="/">
+      <div class="main-form-title">
+        <h1 id="gui-title"></h1>
+      </div>
+      <div class="main-form-block">
+      </div>
+      <button id="submitBtn" type="submit">Submit</button>
+      <textarea id="cmdField" class="hidden" style="width:100%;padding:10px 0;margin: 5px auto;" readonly></textarea>
+    </form>
+  </div>
+
+  <script src="gui.manifest.js"></script>
+
+  <script>
+    // Function definitions
+    const NO_ORDER_BLOCK = 256
+
+    /**
+     * Process values. It does the following things:
+     *  1. Escape any double quotes.
+     *  2. If the value contains spaces, insert double quotes.
+     * 
+     * @param {string} Argument value
+     * 
+     * @return {string} The parsed value
+     */
+    const parseValue = (value) => {
+      value = value.replaceAll('"', '\"')
+      value = /\s/.test(value) ? '"' + value + '"' : value
+      return value
+    }
+
+    /**
+     * Convert form input into commands in the order of 
+     * command priorities. Display the converted command
+     * on textarea.
+     * 
+     * @return {string} The parsed command
+     */
+    const toCommand = () => {
+      let command = blueprint.command.prefix
+
+      // Process command conversion in command order's
+      // ascending order.
+      orderArr.forEach((bpArr, order) => {
+        if (order > 255) {
+          return
+        }
+        if (bpArr) {
+          bpArr.forEach((bp) => {
+            // Skip if the blueprint does not contain instructions for outputing commands
+            if (!bp.command) {
+              return
+            }
+            if (bp.type === 'command') {
+              const hookOut = bp.command.hook()
+              if (hookOut && typeof(hookOut) === 'string' && hookOut.length > 0) {
+                command += " " + hookOut
+              }
+            } else if (bp.type === 'radioGroup') {
+              // Iterate through all radio buttons
+              bp.elements.forEach((inp, idx) => {
+                if (inp.checked) {
+                  // If ignoreOnDisabled is true and the element is disabled, ignore the element
+                  if (bp.command && bp.command.ignoreOnDisabled && inp.disabled) {
+                    return
+                  }
+
+                  if (bp.command.type.toLowerCase() === 'str') {
+                    command += " " + bp.command.arg + blueprint.command.separator + parseValue(inp.value)
+                  } else if (bp.command.type.toLowerCase() === 'flag') {
+                    command += " " + bp.command.args[idx]
+                  }
+                }
+              })
+            } else {
+              // If ignoreOnDisabled is true and the element is disabled, ignore the element
+              if (bp.command && bp.command.ignoreOnDisabled && bp.element.disabled) {
+                return
+              }
+
+              if (bp.command.type.toLowerCase() === 'str') {
+                // Input with value attributes
+                if (bp.element.value.length > 0 || bp.command.includeOnEmpty) {
+                  if (bp.command.ignoreDefaultValue && bp.default && 
+                      new String(bp.element.value).valueOf() === new String(bp.default).valueOf()) {
+                    return
+                  }
+
+                  // Handle multilineStrategy: "multiArgs"
+                  let lines = null
+                  if (bp.command.multilineStrategy && bp.command.multilineStrategy === 'multiArgs') {
+                    lines = bp.element.value.split(/\r?\n/)
+                  } else {
+                    lines = [bp.element.value]
+                  }
+
+                  lines.forEach((line) => {
+                    if (line.length > 0) {
+                      command += " "
+                      if (bp.command.arg && bp.command.arg.length > 0) {
+                        command += bp.command.arg + blueprint.command.separator
+                      }
+                      command += parseValue(line)
+                    }
+                  })
+                }
+              } else if (bp.command.type.toLowerCase() === 'flag') {
+                if (bp.type.startsWith('checkbox')) {
+                  // Checkboxes
+                  if (bp.element.checked) {
+                    command += " " + bp.command.arg
+                  }
+                } else if (bp.type === 'select') {
+                  if (bp.command.args && bp.element.selectedIndex >= bp.startsAt) {
+                    command += " " + bp.command.args[bp.element.selectedIndex-bp.startsAt]
+                  }
+                } else if (bp.element.value.length > 0) {
+                  command += " " + bp.command.arg
+                }
+              }
+            }
+          })
+        }
+      })
+
+      // Add a backslash (\) to the end of the output if there are multiple lines
+      command = command.replace(/\r?\n/, "\\\n")
+
+      // Display on textarea
+      const cmdField = document.querySelector('#cmdField')
+      cmdField.classList.remove('hidden')
+      cmdField.value = command
+
+      return command
+    }
+
+    /**
+     * Register blueprint with the order array. Radix sort is
+     * implemented to sort arguments with different priorities.
+     * 
+     * @param {object}: Form item's blueprint
+     */
+    const registerBlueprint = (currItemBp, groupId) => {
+      let order = -1
+      if (currItemBp.command) {
+        // Use a default order of 255
+        if (!currItemBp.command.order) {
+          currItemBp.command.order = 255
+        }
+        order = currItemBp.command.order
+      } else {
+        order = NO_ORDER_BLOCK
+      }
+
+      // Set groupId
+      currItemBp.groupId = groupId
+
+      // Create an array if the given position is null
+      if (!orderArr[order]) {
+        orderArr[order] = new Array()
+      }
+
+      // Push the current blueprint to the array in the specified order
+      orderArr[order].push(currItemBp)
+    }
+
+    /**
+     * Set input attributes.
+     * 
+     * @param {object} The input element.
+     * @param {object} The attributes (blueprint).
+     */
+    const setInputAttributes = (input, bp) => {
+      // Placeholder attribute
+      if (bp.placeholder) {
+        input.setAttribute('placeholder', bp.placeholder)
+      }
+
+      // Required attribute
+      if (bp.required) {
+        input.setAttribute('required', '')
+      }
+
+      // Checked attribute. Only for radio
+      if (bp.checked) {
+        input.setAttribute('checked', '')
+      }
+
+      // Disabled attribute
+      if (bp.disabled) {
+        input.setAttribute('disabled', '')
+      }
+
+      // id attribute
+      if (bp.id) {
+        input.setAttribute('id', bp.id)
+      }
+
+      // Event listeners
+      if (bp.eventListeners) {
+        for (const event in bp.eventListeners) {
+          input.addEventListener(event, (evt) => {
+            bp.eventListeners[event](evt)
+          })
+        }
+      }
+
+      // Custom attributes
+      if (bp.attributes) {
+        for (const attr in bp.attributes) {
+          input.setAttribute(attr, bp.attributes[attr])
+        }
+      }
+    }
+
+    /**
+     * Set the text/html of label
+     * 
+     * @param {object} The label element.
+     */
+    const renderLabel = (label, bp) => {
+      if (bp.labelHTML) {
+        label.innerHTML = bp.labelHTML
+      } else {
+        label.innerText = bp.label ? bp.label : ""
+        // "*" will only be appended if text mode is used
+        if (bp.required) {
+          label.innerText = label.innerText + "*"
+        }
+      }
+    }
+
+    const toggleElement = (ele, disabled) => {
+      if (ele.disabled && !disabled) {
+        ele.removeAttribute('disabled')
+      } else if (!ele.disabled && disabled) {
+        ele.setAttribute('disabled', '')
+      }
+    }
+
+    const toggleGroup = (groupId, disabled) => {
+      orderArr.forEach((bpArr) => {
+        if (bpArr) {
+          bpArr.forEach((bp) => {
+            if (bp.disabled && !bp.enableOnToggle) {
+              return
+            }
+            if (bp.groupId && bp.groupId === groupId) {
+              if (bp.type === 'radioGroup') {
+                bp.elements.forEach((inp, idx) => {
+                  toggleElement(inp, disabled)
+                })
+              } else {
+                toggleElement(bp.element, disabled)
+              }
+            }
+          })
+        }
+      })
+    }
+
+    const toggleFieldsetVisibility = (fieldsetBlock, visible) => {
+      if (fieldsetBlock.classList.contains('hidden') && visible) {
+        fieldsetBlock.classList.remove('hidden')
+      } else if (!fieldsetBlock.classList.contains('hidden') && !visible) {
+        fieldsetBlock.classList.add('hidden')
+      }
+    }
+
+    /**
+     * Gloabl variable. Stores the current groupId
+     */
+    let globalGroupId = 0
+
+    /**
+     * Generate form elements and add it to DOM recursively.
+     * 
+     * @param {object} The container that holds all the form items of the
+     *                 current level.
+     * @param {object} The blueprint that specifies the current level's 
+     *                 form items.
+     */
+    const createFormElements = (base, formBlueprint, meta) => {
+      const currGroupId = globalGroupId++
+      
+      for (let i = 0; i < formBlueprint.form.length; i++) {
+        const currItemBp = formBlueprint.form[i]
+        if (currItemBp.type.toLowerCase().startsWith("fieldset")) {
+          const meta = {}
+
+          // Fieldset block, recursively generate form items
+          const fieldset = document.createElement('fieldset')
+          base.appendChild(fieldset)
+
+          // Create legends
+          const legend = document.createElement('legend')
+          const h3 = document.createElement('h3')
+          if (currItemBp.titleHTML) {
+            h3.innerHTML = currItemBp.titleHTML
+          } else {
+            h3.innerText = currItemBp.title ? currItemBp.title : ""
+          }
+          
+          // Togglable group
+          if (currItemBp.togglable) {
+            const toggleCheckbox = document.createElement('input')
+            toggleCheckbox.setAttribute('type', 'checkbox')
+            toggleCheckbox.setAttribute('style', 'margin-left: 5px;')
+            h3.prepend(toggleCheckbox)
+            meta.toggleCheckbox = toggleCheckbox
+            meta.disabledOnLoad = currItemBp.disabledOnLoad ? currItemBp.disabledOnLoad : false
+          }
+
+          // Collapsible group
+          if (currItemBp.collapsible) {
+            const collapseBtn = document.createElement('a')
+            collapseBtn.innerText = '▲'
+            h3.prepend(collapseBtn)
+            meta.collapseBtn = collapseBtn
+            meta.collapsedOnLoad = currItemBp.collapsedOnLoad ? currItemBp.collapsedOnLoad : false
+          }
+          
+          legend.appendChild(h3)
+          fieldset.appendChild(legend)
+
+          // Form item container
+          const fieldsetBlock = document.createElement('div')
+          fieldsetBlock.classList.add(currItemBp.type + '-block')
+          fieldset.appendChild(fieldsetBlock)
+          meta.fieldsetBlock = fieldsetBlock
+
+          // Recursively generate form items
+          if (currItemBp.form) {
+            createFormElements(fieldsetBlock, currItemBp, meta)
+          }
+
+        } else if (currItemBp.type === 'checkbox' || currItemBp.type === 'checbox-left') {
+          // Default checkboxes: checkbox positioned left to the label
+          const div = document.createElement('div')
+          div.classList.add('checkbox')
+          const input = document.createElement('input')
+          input.setAttribute('type', 'checkbox')
+          const span = document.createElement('span')
+          renderLabel(span, currItemBp)
+          div.appendChild(input)
+          div.appendChild(span)
+          currItemBp.element = input
+          base.appendChild(div)
+
+          // Set input's attributes
+          setInputAttributes(input, currItemBp)
+
+          // Register elements with order array
+          registerBlueprint(currItemBp, currGroupId)
+
+        } else {
+          // Form items with input positioned right to the label
+          const div = document.createElement('div')
+
+          // Create labels
+          const label = document.createElement('label')
+          renderLabel(label, currItemBp)
+          div.appendChild(label)
+
+          if (currItemBp.type === 'radioGroup') {
+            // Form items that need multiple input elements
+            // A group of radio buttons
+            const radioButtonsDiv = document.createElement('div')
+            radioButtonsDiv.classList.add('radioButtons')
+            const inputs = new Array()
+
+            const generateRadios = (value, text) => {
+              // Create the radio button
+              const currInput = document.createElement('input')
+              currInput.setAttribute('type', 'radio')
+              currInput.setAttribute('value', value)
+              currInput.setAttribute('name', label.innerText)
+
+              // Set input's attributes
+              setInputAttributes(currInput, currItemBp)
+
+              // Handle default values
+              if (currItemBp.default === value) {
+                currInput.setAttribute('checked', '')
+              }
+
+              // Create the label
+              const currLabel = document.createElement('label')
+              currLabel.classList.add('radio')
+              currLabel.setAttribute('for', value)
+              currLabel.innerText = text
+
+              inputs.push(currInput)
+              radioButtonsDiv.appendChild(currInput)
+              radioButtonsDiv.appendChild(currLabel)
+            }
+
+            currItemBp.options.forEach((obj) => {
+              if (typeof(obj) === 'string') {
+                // An array, use the same text for value and text description
+                generateRadios(obj, obj)
+              } else {
+                // An object with value->text pair
+                generateRadios(obj.value, obj.text)
+              }
+            })
+
+            // Set the id for each bp.elements
+            if (currItemBp.ids) {
+              inputs.forEach((ele, idx) => {
+                ele.setAttribute('id', currItemBp.ids[idx])
+              })
+            }
+
+            div.appendChild(radioButtonsDiv)
+            currItemBp.elements = inputs
+
+          } else {
+            // Form items that only need one input element
+            let input = null
+            if (currItemBp.type === 'select') {
+              // Special routine for select
+              input = document.createElement('select')
+              
+              const generateOptions = (value, name) => {
+                const currOpt = document.createElement('option')
+                currOpt.setAttribute('value', value)
+                currOpt.innerText = name
+                
+                // Handle selected option. Note: when value/text pairs are
+                // used instead of a list of strings, the default value
+                // corresponds to the value field, not text
+                if (currItemBp.default && value == currItemBp.default) {
+                  currOpt.setAttribute('selected', 'selected')
+                  foundDefault = true
+                }
+
+                input.appendChild(currOpt)
+              }
+              
+              let foundDefault = false
+              currItemBp.options.forEach((obj) => {
+                if (typeof(obj) === 'string') {
+                  // An array, use the same text for value and text description
+                  generateOptions(obj, obj)
+                } else {
+                  // An object with value->text pair
+                  generateOptions(obj.value, obj.text)
+                }
+              })
+              
+              // If the default value is not found or no default value provided
+              if (!currItemBp.default && !foundDefault) {
+                const emptyOpt = document.createElement('option')
+                emptyOpt.setAttribute('selected', '')
+                emptyOpt.setAttribute('disabled', '')
+                if (currItemBp.placeholder) {
+                  emptyOpt.innerText = currItemBp.placeholder
+                }
+                input.prepend(emptyOpt)
+                currItemBp.startsAt = 1
+              } else {
+                currItemBp.startsAt = 0
+              }
+
+              input.setAttribute('type', currItemBp.type)
+
+            } else if (currItemBp.type === 'checkbox-right') {
+              // Special routine for checkboxes displayed to the right of label
+              input = document.createElement('input')
+              input.setAttribute('type', 'checkbox')
+
+              // Set input's attributes
+              setInputAttributes(input, currItemBp)
+            } else if (currItemBp.type === 'textarea') {
+              input = document.createElement('textarea')
+            } else {
+              // Other input types
+              input = document.createElement('input')
+              input.setAttribute('type', currItemBp.type)
+            }
+
+            // Set input's attributes
+            setInputAttributes(input, currItemBp)
+
+            // Process the help message (display upon hover)
+            if (currItemBp.help) {
+              label.setAttribute('title', currItemBp.help)
+            }
+
+            // Process default values
+            if (currItemBp.default) {
+              input.setAttribute('value', currItemBp.default)
+            }
+
+            div.appendChild(input)
+            currItemBp.element = input
+          }
+
+          base.appendChild(div)
+
+          // Register elements with order array
+          registerBlueprint(currItemBp, currGroupId, null)
+        }
+      }
+
+      if (meta) {
+        // Toggle
+        if (meta.toggleCheckbox) {
+          // Handle checkbox state changes
+          meta.toggleCheckbox.addEventListener('click', (event) => {
+            toggleGroup(currGroupId, !event.target.checked)
+          })
+
+          // Initialize checkbox initial state
+          if (!meta.disabledOnLoad) {
+            meta.toggleCheckbox.checked = true
+          }
+        }
+
+        // Handle disabledOnLoad: true
+        if (meta.disabledOnLoad) {
+          toggleGroup(currGroupId, true)
+        }
+
+        // Collapse
+        if (meta.collapseBtn) {
+          meta.collapseBtn.addEventListener('click', (evt) => {
+            if (meta.collapseBtn.innerText === '▲') {
+              // Hide
+              toggleFieldsetVisibility(meta.fieldsetBlock, false)
+              meta.collapseBtn.innerText = '▼'
+            } else {
+              // Show
+              toggleFieldsetVisibility(meta.fieldsetBlock, true)
+              meta.collapseBtn.innerText = '▲'
+            }
+            return false
+          })
+
+          if (meta.collapsedOnLoad) {
+            // Hide
+            toggleFieldsetVisibility(meta.fieldsetBlock, false)
+            meta.collapseBtn.innerText = '▼'
+          }
+        }
+      }
+    }
+
+  </script>
+
+  <script>
+    // Setup script
+    // Order array. Order ranges from 0 to 255. 256 is reserved for NO_ORDER_BLOCK
+    const orderArr = new Array()
+    orderArr.length = 256
+
+    // Configure title
+    document.title = (blueprint && blueprint.meta && blueprint.meta.title) ? blueprint.meta.title : "Untitled GUI"
+    document.querySelector('#gui-title').innerText = document.title
+
+    // Prevent submit button's default behavior. Define onclick actions.
+    document.querySelector('#submitBtn').addEventListener("click", (event) => {
+      if (!document.querySelector('#main-form').checkValidity()) {
+        document.querySelector('#main-form').reportValidity()
+      } else {
+        event.preventDefault()
+        toCommand()
+      }
+    })
+
+    // Output command field: Select all text on click
+    document.querySelector('#cmdField').addEventListener('click', (event) => {
+      event.target.focus()
+      event.target.select()
+    })
+
+    // Generate form entries recursively
+    const formBase = document.querySelector('#main-form>.main-form-block')
+    const formBlueprintBase = blueprint
+    createFormElements(formBase, formBlueprintBase)
+
+    // Form for custom command blocks
+    if (blueprint.command.hooks) {
+      blueprint.command.hooks.forEach((cmdBlock) => {
+        let bp = {}
+        bp.type = 'command'
+        bp.command = cmdBlock
+
+        registerBlueprint(bp, -1)
+      })
+    }
+
+  </script>
+
+  <style>
+    html,
+    body {
+      min-height: 100%;
+    }
+
+    body,
+    div,
+    form,
+    input,
+    select,
+    textarea,
+    p {
+      padding: 0;
+      margin: 0;
+      outline: none;
+      font-family: Roboto, Arial, sans-serif;
+      font-size: 14px;
+      color: #666;
+    }
+
+    h1 {
+      margin: 0;
+      font-weight: 400;
+      color: #007bff;
+      cursor: default;
+    }
+
+    h3 {
+      margin: 12px 0;
+      color: #007bff;
+      cursor: default;
+    }
+
+    h3 a {
+      text-decoration: none;
+    }
+
+    .main-form-title {
+      padding: 0 0 0 10px;
+    }
+
+    .main-block {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: #fff;
+    }
+
+    #main-form {
+      width: 100%;
+      padding: 20px;
+    }
+
+    fieldset {
+      border: none;
+      border-top: 1px solid #007bff;
+    }
+
+    .fieldset-block {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+    }
+
+    .fieldset-block>div {
+      display: flex;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .fieldset-block>div,
+    input,
+    textarea,
+    label {
+      width: 100%;
+    }
+
+    label {
+      padding: 0 5px;
+      text-align: right;
+      vertical-align: middle;
+    }
+
+    input, textarea {
+      padding: 5px;
+      vertical-align: middle;
+    }
+
+    .checkbox {
+      margin-bottom: 10px;
+    }
+
+    select,
+    .radioButtons {
+      width: calc(100% + 26px);
+      padding: 5px 0;
+    }
+
+    select {
+      background: transparent;
+    }
+
+    input[type="radio"] {
+      width: auto;
+    }
+
+    .radioButtons[type="radio"] {
+      padding: 0 5px 0 0;
+    }
+
+    input[type="checkbox"] {
+      width: auto;
+      margin: -2px 10px 0 0;
+    }
+
+    .checkbox a {
+      color: #007bff;
+    }
+
+    .checkbox a:hover {
+      color: #0069CF;
+    }
+
+    button {
+      width: 100%;
+      padding: 10px 0;
+      margin: 10px auto;
+      border-radius: 5px;
+      border: none;
+      background: #007bff;
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    button:hover {
+      background: #0069CF;
+    }
+
+    @media (min-width: 568px) {
+      .fieldset-block>div {
+        width: 50%;
+      }
+
+      label {
+        width: 40%;
+      }
+
+      input,
+      textarea {
+        width: 60%;
+      }
+
+      select,
+      .radioButtons {
+        width: calc(60% + 16px);
+      }
+    }
+
+    .hidden {
+      display: none;
+    }
+  </style>
+</body>
+
+</html>
